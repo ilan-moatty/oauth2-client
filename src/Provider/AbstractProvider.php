@@ -19,13 +19,9 @@ use GuzzleHttp\ClientInterface as HttpClientInterface;
 use GuzzleHttp\Exception\BadResponseException;
 use League\OAuth2\Client\Grant\AbstractGrant;
 use League\OAuth2\Client\Grant\GrantFactory;
-use League\OAuth2\Client\OptionProvider\OptionProviderInterface;
-use League\OAuth2\Client\OptionProvider\PostAuthOptionProvider;
 use League\OAuth2\Client\Provider\Exception\IdentityProviderException;
 use League\OAuth2\Client\Token\AccessToken;
-use League\OAuth2\Client\Token\AccessTokenInterface;
 use League\OAuth2\Client\Tool\ArrayAccessorTrait;
-use League\OAuth2\Client\Tool\GuardedPropertyTrait;
 use League\OAuth2\Client\Tool\QueryBuilderTrait;
 use League\OAuth2\Client\Tool\RequestFactory;
 use Psr\Http\Message\RequestInterface;
@@ -40,7 +36,6 @@ use UnexpectedValueException;
 abstract class AbstractProvider
 {
     use ArrayAccessorTrait;
-    use GuardedPropertyTrait;
     use QueryBuilderTrait;
 
     /**
@@ -94,11 +89,6 @@ abstract class AbstractProvider
     protected $httpClient;
 
     /**
-     * @var OptionProviderInterface
-     */
-    protected $optionProvider;
-
-    /**
      * Constructs an OAuth 2.0 service provider.
      *
      * @param array $options An array of options to set on this provider.
@@ -111,9 +101,11 @@ abstract class AbstractProvider
      */
     public function __construct(array $options = [], array $collaborators = [])
     {
-        // We'll let the GuardedPropertyTrait handle mass assignment of incoming
-        // options, skipping any blacklisted properties defined in the provider
-        $this->fillProperties($options);
+        foreach ($options as $option => $value) {
+            if (property_exists($this, $option)) {
+                $this->{$option} = $value;
+            }
+        }
 
         if (empty($collaborators['grantFactory'])) {
             $collaborators['grantFactory'] = new GrantFactory();
@@ -133,11 +125,6 @@ abstract class AbstractProvider
             );
         }
         $this->setHttpClient($collaborators['httpClient']);
-
-        if (empty($collaborators['optionProvider'])) {
-            $collaborators['optionProvider'] = new PostAuthOptionProvider();
-        }
-        $this->setOptionProvider($collaborators['optionProvider']);
     }
 
     /**
@@ -230,29 +217,6 @@ abstract class AbstractProvider
     }
 
     /**
-     * Sets the option provider instance.
-     *
-     * @param  OptionProviderInterface $provider
-     * @return self
-     */
-    public function setOptionProvider(OptionProviderInterface $provider)
-    {
-        $this->optionProvider = $provider;
-
-        return $this;
-    }
-
-    /**
-     * Returns the option provider instance.
-     *
-     * @return OptionProviderInterface
-     */
-    public function getOptionProvider()
-    {
-        return $this->optionProvider;
-    }
-
-    /**
      * Returns the current value of the state parameter.
      *
      * This can be accessed by the redirect handler during authorization.
@@ -342,10 +306,19 @@ abstract class AbstractProvider
             $options['scope'] = $this->getDefaultScopes();
         }
 
+        // Default configuration
+//        $options += [
+//            'response_type'   => 'code',
+//            'approval_prompt' => 'auto'
+//        ];
+
+        // Custom configuration to use jwt.
         $options += [
-            'response_type'   => 'code',
-            'approval_prompt' => 'auto'
+            'response_type'   => 'token',
+            'nonce' => time(),
+            'response_mode' => 'form_post'
         ];
+
 
         if (is_array($options['scope'])) {
             $separator = $this->getScopeSeparator();
@@ -500,6 +473,34 @@ abstract class AbstractProvider
     }
 
     /**
+     * Returns the request body for requesting an access token.
+     *
+     * @param  array $params
+     * @return string
+     */
+    protected function getAccessTokenBody(array $params)
+    {
+        return $this->buildQueryString($params);
+    }
+
+    /**
+     * Builds request options used for requesting an access token.
+     *
+     * @param  array $params
+     * @return array
+     */
+    protected function getAccessTokenOptions(array $params)
+    {
+        $options = ['headers' => ['content-type' => 'application/x-www-form-urlencoded']];
+
+        if ($this->getAccessTokenMethod() === self::METHOD_POST) {
+            $options['body'] = $this->getAccessTokenBody($params);
+        }
+
+        return $options;
+    }
+
+    /**
      * Returns a prepared request for requesting an access token.
      *
      * @param array $params Query string parameters
@@ -509,7 +510,7 @@ abstract class AbstractProvider
     {
         $method  = $this->getAccessTokenMethod();
         $url     = $this->getAccessTokenUrl($params);
-        $options = $this->optionProvider->getAccessTokenOptions($this->getAccessTokenMethod(), $params);
+        $options = $this->getAccessTokenOptions($params);
 
         return $this->getRequest($method, $url, $options);
     }
@@ -520,7 +521,7 @@ abstract class AbstractProvider
      * @param  mixed $grant
      * @param  array $options
      * @throws IdentityProviderException
-     * @return AccessTokenInterface
+     * @return AccessToken
      */
     public function getAccessToken($grant, array $options = [])
     {
@@ -564,7 +565,7 @@ abstract class AbstractProvider
      *
      * @param  string $method
      * @param  string $url
-     * @param  AccessTokenInterface|string $token
+     * @param  AccessToken|string $token
      * @param  array $options Any of "headers", "body", and "protocolVersion".
      * @return RequestInterface
      */
@@ -578,7 +579,7 @@ abstract class AbstractProvider
      *
      * @param  string $method
      * @param  string $url
-     * @param  AccessTokenInterface|string|null $token
+     * @param  AccessToken|string|null $token
      * @param  array $options
      * @return RequestInterface
      */
@@ -739,7 +740,7 @@ abstract class AbstractProvider
      *
      * @param  array $response
      * @param  AbstractGrant $grant
-     * @return AccessTokenInterface
+     * @return AccessToken
      */
     protected function createAccessToken(array $response, AbstractGrant $grant)
     {
